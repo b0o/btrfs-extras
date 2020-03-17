@@ -71,6 +71,9 @@ WARNING
   tests, and has only been manually tested on a small range of use case
   scenarios. There is a high risk of bugs that will lead to data loss. Proceed
   at your own risk.
+
+WARNING
+  support for special characters in filenames is flaky
 EOF
   if ! [[ $# -gt 0 && $1 == "H" ]]; then
     return 0
@@ -116,10 +119,11 @@ declare -ga CMD_BTRBK
 declare -ga CMD_RM
 CMD_BTRFS=("$(command -v btrfs)")
 CMD_BTRBK=("$(command -v btrbk)" -v --format raw)
-CMD_RM=("$(command -v rm)" -fv --one-file-system --preserve-root)
+CMD_RM=("$(command -v rm)" -v --one-file-system --preserve-root)
 
 declare -g BTRBK_CONFIG=""
 declare -g BTRBK_LOCKFILE=""
+declare -g BTRBK_LOCKFILE_SUB=""
 
 declare -gi btrbk_lock_pid=0
 
@@ -244,7 +248,6 @@ function tick() {
   njobs=$(jobs -r | wc -l)
 
   vlog "${Dbg}jobs: ${Cya}$njobs${RCol}/${Cya}$NPROC${RCol} running, ${Cya}${#cmd_queue[@]}${RCol} queued"
-  # vlog "${Ifo}cmd_queue (${Cya}${#cmd_queue[@]}${RCol}):\n${Yel}$(printf '  %s\n' "${cmd_queue[@]}")${RCol}"
 
   if [[ ${#cmd_queue[@]} -eq 0 && $njobs -eq 0 ]]; then
     return 2
@@ -277,14 +280,15 @@ function sched() {
 }
 
 function sched_purge() {
-  if [[ $# -ne 2 ]]; then
-    log "${Err}sched_purge: expected 2 arguments, got ${Yel}$#${RCol}"
+  if [[ $# -lt 2 ]]; then
+    log "${Err}sched_purge: expected 2 or more arguments, got ${Yel}$#${RCol}"
     return 1
   fi
   local subvol="$1"
-  local target_file="$2"
-  purge_targets+=("$target_file")
-  sched purge "$subvol" "$target_file"
+  shift
+  local -a target_files=("$@")
+  purge_targets+=("${target_files[@]}")
+  sched purge "$subvol" "${target_files[@]}"
 }
 
 function _run() {
@@ -392,7 +396,7 @@ function purge() {
   fi
   local subvol="$1"
   shift
-  local target="$*"
+  local -a targets=("$@")
 
   local ro
   ro="$(btrfs property get -t subvol "$subvol" ro)" || {
@@ -403,9 +407,9 @@ function purge() {
   ro="${ro/ro=/}"
 
   vlog "${Dbg}target"
-  vlog "  target: ${Cya}$target${RCol}"
-  vlog "  subvol: ${Cya}$subvol${RCol}"
-  vlog "  ro:     ${Cya}$ro${RCol}"
+  vlog "  subvol:  ${Cya}$subvol${RCol}"
+  vlog "  targets: ${Cya}${targets[*]}${RCol}"
+  vlog "  ro:      ${Cya}$ro${RCol}"
 
   if [[ $ro == "true" ]]; then
     run "${CMD_BTRFS[@]}" property set -t subvol "$subvol" ro false || {
@@ -415,18 +419,28 @@ function purge() {
     }
   fi
 
-  run "${CMD_RM[@]}" "$target" || {
-    err+=1
-    log "${Err}unable to remove ${Yel}$target${RCol}"
-    return 2
-  }
+  # TODO: if a failure occurs from here on to the end of the function, the
+  # original 'ro' state should be restored
+
+  local -i _err=0
+  for target in "${targets[@]}"; do
+    run "${CMD_RM[@]}" "$target" || {
+      _err=1
+      err+=1
+      log "${Err}unable to remove ${Yel}$target${RCol}"
+    }
+  done
 
   if [[ $ro == "true" ]]; then
     run "${CMD_BTRFS[@]}" property set -t subvol "$subvol" ro true || {
+      _err=1
       err+=1
       log "${Err}unable to re-set ${Yel}ro=true${RCol} for subvol ${Yel}$subvol${RCol}"
-      return 2
     }
+  fi
+
+  if [[ $_err -eq 1 ]]; then
+    return 2
   fi
 }
 
@@ -542,7 +556,8 @@ function btrbk_get_lockfile() {
 
 function lock() {
   vlog "${Dbg}lock()"
-  perl << EOF &
+  local -a perl_script_lock
+  mapfile -t perl_script_lock << EOF
     \$lf="$BTRBK_LOCKFILE";
     unless(open(LOCKFILE, ">>\$lf")) {
       print("\$lf: open error: \$!\\n");
@@ -558,7 +573,9 @@ function lock() {
       sleep 1;
     }
 EOF
+  perl <<< "$(printf '%s\n' "${perl_script_lock[@]}")" &
   local -i pid=$!
+  # XXX: hacky way to ensure the perl script has had a chance to start up
   sleep 0.1
   local n
   if ! ( n="$(ps --format=fname --no-headers $pid)" && [[ $n == "perl" ]] ); then
@@ -691,7 +708,11 @@ function main() {
     }
   fi
 
-  if [[ -n "$BTRBK_LOCKFILE" ]]; then
+  if [[ -z "$BTRBK_LOCKFILE" ]]; then
+    log "${Err}unable to determine btrbk lockfile"
+    return 2
+  else
+    BTRBK_LOCKFILE_SUB="${BTRBK_LOCKFILE}.sublock"
     local btrbk_lockdir
     btrbk_lockdir="$(dirname "$BTRBK_LOCKFILE")"
     if [[ ! -d "$btrbk_lockdir" ]]; then
@@ -701,7 +722,8 @@ function main() {
         return 2
       }
     fi
-    vlog "${Dbg}btrbk lockfile: ${Pur}$BTRBK_LOCKFILE${RCol}"
+    vlog "${Dbg}btrbk lockfile:     ${Pur}$BTRBK_LOCKFILE${RCol}"
+    vlog "${Dbg}btrbk sub-lockfile: ${Pur}$BTRBK_LOCKFILE_SUB${RCol}"
   fi
 
   if [[ $secure -eq 1 ]]; then
@@ -722,10 +744,14 @@ function main() {
     return 1
   fi
 
+  CMD_BTRBK+=(--lockfile "$BTRBK_LOCKFILE_SUB")
+  lock
+
   local -a paths=("$@")
   vlog "${Dbg}paths: ${Cya}${paths[*]}${RCol}"
 
-  local -A targets=()
+  local -A subvol_targets=()
+  local -i num_targets=0
   for p in "${paths[@]}"; do
     local path ppath subvol_path
     path="$(realpath -m "$p")"
@@ -754,7 +780,12 @@ function main() {
     if [[ $apply_source -eq 1 ]]; then
       local src_rel
       if src_rel="$(realpath -qe "$subvol_path/$rel")"; then
-        targets["$src_rel"]="$subvol_path"
+        # subvol_targets["$src_rel"]="$subvol_path"
+        if [[ -v subvol_targets["$subvol_path"] ]]; then
+          subvol_targets["$subvol_path"]+=":"
+        fi
+        subvol_targets["$subvol_path"]+="$src_rel"
+        num_targets+=1
       fi
     fi
     if [[ $apply_snapshots -eq 1 ]]; then
@@ -762,7 +793,12 @@ function main() {
       for ss in $(parse_subvol_snapshots "$subvol"); do
         local ss_rel
         if ss_rel="$(realpath -qe "$ss/$rel")"; then
-          targets["$ss_rel"]="$ss"
+          # subvol_targets["$ss_rel"]="$ss"
+          if [[ -v subvol_targets["$ss"] ]]; then
+            subvol_targets["$ss"]+=":"
+          fi
+          subvol_targets["$ss"]+="$ss_rel"
+          num_targets+=1
         fi
       done
     fi
@@ -771,48 +807,64 @@ function main() {
       for bu in $(parse_subvol_backups "$subvol"); do
         local bu_rel
         if bu_rel="$(realpath -qe "$bu/$rel")"; then
-          targets["$bu_rel"]="$bu"
+          # subvol_targets["$bu_rel"]="$bu"
+          if [[ -v subvol_targets["$bu"] ]]; then
+            subvol_targets["$bu"]+=":"
+          fi
+          subvol_targets["$bu"]+="$bu_rel"
+          num_targets+=1
         fi
       done
     fi
   done
 
-  if [[ ${#targets[@]} -eq 0 ]]; then
+  if [[ ${num_targets} -eq 0 ]]; then
     log "${Wrn}no candidates for deletion"
     exit 2
   fi
 
-  vlog "${Ifo}${Cya}${#targets[@]}${RCol} candidates for deletion"
+  vlog "${Ifo}${Cya}${num_targets}${RCol} candidates for deletion"
 
   local target
   local -i i=0
   # TODO: make shellcheck happy
-  for target in $(sort -g <<< "$(printf '%s\n' "${!targets[@]}")"); do
-    i+=1
-    local subvol="${targets[$target]}"
-    if [[ $INTERACTIVE -eq 1 ]]; then
-      confirm_ynas "(${Cya}$i${RCol}/${Cya}${#targets[@]}${RCol}) Confirm: permanently remove ${Yel}$target${RCol}?" 1 || {
-        local -i c=$?
-        if [[ $c -eq 1 ]]; then
-          vlog "${Dbg}skipping ${Yel}$target${RCol}..."
+  for subvol in $(sort -g <<< "$(printf '%s\n' "${!subvol_targets[@]}")"); do
+    local -i skip_rest=0
+    local -a targets_selected=()
+    vlog "${Dbg}subvol:  ${Pur}$subvol${RCol}"
+    vlog "${Dbg}targets: ${Cya}${subvol_targets["$subvol"]}${RCol}"
+    for target in $(sort -g <<< "$(tr ':' '\n' <<< "${subvol_targets["$subvol"]}")"); do
+      i+=1
+      if [[ $INTERACTIVE -eq 1 ]]; then
+        confirm_ynas "(${Cya}$i${RCol}/${Cya}${num_targets}${RCol}) Confirm: permanently remove ${Yel}$target${RCol}?" 1 || {
+          local -i c=$?
+          if [[ $c -eq 1 ]]; then
+            vlog "${Dbg}skipping ${Yel}$target${RCol}..."
+            continue
+          elif [[ $c -eq 2 ]]; then
+            INTERACTIVE=2
+          elif [[ $c -eq 3 ]]; then
+            skip_rest=1
+            break
+          fi
+        }
+      fi
+      targets_selected+=("$target")
+    done
+    if [[ ${#targets_selected[@]} -gt 0 ]]; then
+      sched_purge "$subvol" "${targets_selected[@]}" || {
+        local c=$?
+        if [[ $c -eq 2 ]]; then
           continue
-        elif [[ $c -eq 2 ]]; then
-          INTERACTIVE=2
-        elif [[ $c -eq 3 ]]; then
-          break
         fi
+        err+=1
+        log "${Err}removal failed for ${Yel}$target${RCol}"
+        return 3
       }
     fi
-
-    sched_purge "$subvol" "$target" || {
-      local c=$?
-      if [[ $c -eq 2 ]]; then
-        continue
-      fi
-      err+=1
-      log "${Err}removal failed for ${Yel}$target${RCol}"
-      return 3
-    }
+    if [[ $skip_rest -eq 1 ]]; then
+      break
+    fi
   done
 
   if [[ ${#purge_targets[@]} -eq 0 ]]; then
@@ -829,7 +881,6 @@ function main() {
     confirm_yn "Continue?" 1 || return 2
   fi
 
-  lock
   local i=0
   while true; do
     if [[ $i -gt 0 ]]; then
