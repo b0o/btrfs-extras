@@ -1,0 +1,896 @@
+#!/usr/bin/env bash
+
+# Purge unwanted files/directories from all btrbk snapshots/backups at once.
+#
+# Copyright (C) 2019-2020 Maddison Hellstrom <https://github.com/b0o>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# TODO: add unit tests
+
+set -euo pipefail
+
+declare -g prog
+prog="$(basename "$0")"
+
+declare -g     version="v0.1.0"
+declare -g     authors=("2019-2020 Maddison Hellstrom <github.com/b0o>")
+declare -g  repository="https://github.com/b0o/btrbk-purge"
+declare -g      issues="https://github.com/b0o/btrbk-purge/issues"
+declare -g     license="GPL-3.0-or-later"
+declare -g license_url="https://www.gnu.org/licenses/gpl-3.0.txt"
+
+function usage() {
+  cat >&2 << EOF
+Usage: $prog [options] <path> [path ...]
+
+Purge unwanted files/directories from all btrbk snapshots/backups at once.
+
+Options
+  General
+  -v            verbose output
+  -d            dry-run
+  -h            show short usage information
+  -H            show extended usage information
+
+  Btrbk
+  -C <config>   the configuration file to be used by btrbk; if unspecified, the
+                default btrbk configuration file will be used.
+  -L <lockfile> the lockfile used by btrbk; if unspecified, btrbk-purge will
+                attempt to determine the lockfile from the btrbk configuration
+                file.
+
+  Filtering
+  -a            apply to source, snapshots, and backups
+  -S            apply to source
+  -s            apply to snapshots [default: true]
+  -b            apply to backups   [default: true]
+
+  Removal
+  -r            remove subdirectories and their contents recursively
+  -x            secure removal using srm
+  -i            interactively prompt before removal
+  -p <n>        run <n> concurrent deletion processes (default: 1)
+
+WARNING
+  $prog is still in the experimental phase. It does not have unit
+  tests, and has only been manually tested on a small range of use case
+  scenarios. There is a high risk of bugs that will lead to data loss. Proceed
+  at your own risk.
+EOF
+  if ! [[ $# -gt 0 && $1 == "H" ]]; then
+    return 0
+  fi
+  cat >&2 << EOF
+
+Notes
+  Safety
+  $prog is a utility for file deletion, and as such its usage comes with the
+  risk of accidental deletion of important data. Prior to running any purge,
+  please use the -d (dry-run) option to verify that only the desired files will
+  be deleted.
+
+  Lockfiles
+  It is important to ensure your btrbk installation is correctly configured to
+  use a lockfile. This will ensure that btrbk-purge doesn't attempt to alter a
+  snapshot that btrbk is operating on, which could lead to loss of filesystem
+  integrity.
+
+  Network Backups
+  $prog has not been developed with network backups in mind; they are currently
+  not supported.
+
+Version:    $version
+Repository: $repository
+Issues:     $issues
+License:    $license
+            $license_url
+Copyright:  $(printf '%s\n' "${authors[0]}")
+$(printf '            %s\n' "${authors[@]:1}")
+EOF
+}
+
+declare -g TICK_INTERVAL="0.250"
+
+declare -gi DRY_RUN=0
+declare -gi VERBOSE=0
+declare -gi INTERACTIVE=0
+declare -gi NPROC=1
+
+declare -ga CMD_BTRFS
+declare -ga CMD_BTRBK
+declare -ga CMD_RM
+CMD_BTRFS=("$(command -v btrfs)")
+CMD_BTRBK=("$(command -v btrbk)" -v --format raw)
+CMD_RM=("$(command -v rm)" -fv --one-file-system --preserve-root)
+
+declare -g BTRBK_CONFIG=""
+declare -g BTRBK_LOCKFILE=""
+
+declare -gi btrbk_lock_pid=0
+
+declare -gi err=0
+
+declare -ga cmd_queue=()
+declare -ga purge_targets=()
+
+declare termcolors
+if termcolors="$(command -v termcolors)"; then
+  # shellcheck disable=1090
+  source "$termcolors"
+else
+  declare -xg RCol='\e[0m'
+
+  # Regular
+  declare -xg Bla='\e[0;30m'
+  declare -xg Red='\e[0;31m'
+  declare -xg Gre='\e[0;32m'
+  declare -xg Yel='\e[0;33m'
+  declare -xg Blu='\e[0;34m'
+  declare -xg Pur='\e[0;35m'
+  declare -xg Cya='\e[0;36m'
+  declare -xg Whi='\e[0;37m'
+
+  # Bold
+  declare -xg BBla='\e[1;30m'
+  declare -xg BRed='\e[1;31m'
+  declare -xg BGre='\e[1;32m'
+  declare -xg BYel='\e[1;33m'
+  declare -xg BBlu='\e[1;34m'
+  declare -xg BPur='\e[1;35m'
+  declare -xg BCya='\e[1;36m'
+  declare -xg BWhi='\e[1;37m'
+
+  # Underline
+  declare -xg UBla='\e[4;30m'
+  declare -xg URed='\e[4;31m'
+  declare -xg UGre='\e[4;32m'
+  declare -xg UYel='\e[4;33m'
+  declare -xg UBlu='\e[4;34m'
+  declare -xg UPur='\e[4;35m'
+  declare -xg UCya='\e[4;36m'
+  declare -xg UWhi='\e[4;37m'
+
+  # High Intensity
+  declare -xg IBla='\e[0;90m'
+  declare -xg IRed='\e[0;91m'
+  declare -xg IGre='\e[0;92m'
+  declare -xg IYel='\e[0;93m'
+  declare -xg IBlu='\e[0;94m'
+  declare -xg IPur='\e[0;95m'
+  declare -xg ICya='\e[0;96m'
+  declare -xg IWhi='\e[0;97m'
+
+  # BoldHigh Intens
+  declare -xg BIBla='\e[1;90m'
+  declare -xg BIRed='\e[1;91m'
+  declare -xg BIGre='\e[1;92m'
+  declare -xg BIYel='\e[1;93m'
+  declare -xg BIBlu='\e[1;94m'
+  declare -xg BIPur='\e[1;95m'
+  declare -xg BICya='\e[1;96m'
+  declare -xg BIWhi='\e[1;97m'
+
+  # Background
+  declare -xg On_Bla='\e[40m'
+  declare -xg On_Red='\e[41m'
+  declare -xg On_Gre='\e[42m'
+  declare -xg On_Yel='\e[43m'
+  declare -xg On_Blu='\e[44m'
+  declare -xg On_Pur='\e[45m'
+  declare -xg On_Cya='\e[46m'
+  declare -xg On_Whi='\e[47m'
+
+  # High Intensity Backgrounds
+  declare -xg On_IBla='\e[0;100m'
+  declare -xg On_IRed='\e[0;101m'
+  declare -xg On_IGre='\e[0;102m'
+  declare -xg On_IYel='\e[0;103m'
+  declare -xg On_IBlu='\e[0;104m'
+  declare -xg On_IPur='\e[0;105m'
+  declare -xg On_ICya='\e[0;106m'
+  declare -xg On_IWhi='\e[0;107m'
+
+  # Status Messages
+  declare -xg Ifo="${IGre}[INFO]  ${RCol}"
+  declare -xg Wrn="${IYel}[WARN]  ${RCol}"
+  declare -xg Err="${IRed}[ERR]   ${RCol}"
+  declare -xg Dbg="${ICya}[DEBUG] ${RCol}"
+fi
+
+function log() {
+  if [[ -p /dev/stdin ]]; then
+    local line
+    while read -r line; do
+      echo -e "${*}$line" >&2
+    done
+  elif [[ $# -gt 0 ]]; then
+    echo -e "$*" >&2
+  fi
+}
+
+function vlog() {
+  if [[ $VERBOSE -eq 1 ]]; then
+    if [[ $# -gt 0 ]]; then
+      log "$*"
+    else
+      log
+    fi
+  elif [[ -p /dev/stdin ]]; then # purge stdin
+    local line
+    while read -r line; do
+      true
+    done
+  fi
+}
+
+function tick() {
+  vlog "${Dbg}tick() ${Yel}${RCol}"
+  local -i njobs
+  njobs=$(jobs -r | wc -l)
+
+  vlog "${Dbg}jobs: ${Cya}$njobs${RCol}/${Cya}$NPROC${RCol} running, ${Cya}${#cmd_queue[@]}${RCol} queued"
+  # vlog "${Ifo}cmd_queue (${Cya}${#cmd_queue[@]}${RCol}):\n${Yel}$(printf '  %s\n' "${cmd_queue[@]}")${RCol}"
+
+  if [[ ${#cmd_queue[@]} -eq 0 && $njobs -eq 0 ]]; then
+    return 2
+  fi
+
+  local -a q=("${cmd_queue[@]}")
+  cmd_queue=()
+  for i in "${!q[@]}"; do
+    local c="${q[$i]}"
+    if [[ $NPROC -eq 1 ]]; then
+      _run "$c" || {
+        vlog "${Wrn}command '${Yel}$c${RCol}' exited with code ${Yel}$?${RCol}"
+      }
+      continue
+    fi
+
+    njobs=$(jobs -r | wc -l)
+    if [[ $njobs -lt $NPROC ]]; then
+      # TODO: capture success/error info to display on exit
+      ( _run "$c" || return 2 ) &
+    else
+      cmd_queue+=("$c")
+    fi
+  done
+}
+
+function sched() {
+  vlog "${Dbg}sched() ${Yel}${*}${RCol}"
+  cmd_queue+=("$*")
+}
+
+function sched_purge() {
+  if [[ $# -ne 2 ]]; then
+    log "${Err}sched_purge: expected 2 arguments, got ${Yel}$#${RCol}"
+    return 1
+  fi
+  local subvol="$1"
+  local target_file="$2"
+  purge_targets+=("$target_file")
+  sched purge "$subvol" "$target_file"
+}
+
+function _run() {
+  local -i c
+  eval "$*" || {
+    c=${PIPESTATUS[0]:-$?}
+    log "${Wrn}exit code: ${Yel}$c${RCol}"
+    # shellcheck disable=2086
+    return $c
+  }
+  vlog "${Ifo}success"
+}
+
+function run() {
+  vlog "${Dbg}run() ${Yel}${*}${RCol}"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "--- ${IYel}DRY RUN${RCol} ---"
+    return 0
+  fi
+  _run "$@" 2> >(vlog "${Blu}[RUN]${RCol}      ")
+}
+
+# idempotent run - used for operations which will not mutate system state; not
+# shielded by the DRY_RUN setting
+function irun() {
+  vlog "${Dbg}irun() ${Yel}${*}${RCol}"
+  _run "$@" 2> >(vlog "${Blu}[IRUN]${RCol}     ")
+}
+
+# TODO: generalize confirm_yn and confirm_yna
+function confirm_yn() {
+  local confmsg="$1"
+  local -i flip=${2:-0}
+  local ynmsg="y/N"
+  if [[ $flip -eq 1 ]]; then
+    ynmsg="Y/n"
+  fi
+  while true; do
+    log "${confmsg:-Are you sure?} [${Yel}${ynmsg}${RCol}] "
+    read -rp "> " yn
+    case $yn in
+    [Yy]*)
+      return 0
+      ;;
+    [Nn]*)
+      return 1
+      ;;
+    "")
+      if [[ $flip -eq 1 ]]; then
+        return 0
+      else
+        return 1
+      fi
+      ;;
+    *)
+      log "Please answer ${On_Yel}${BIBla}[Y|y]es${RCol} or ${On_Yel}${BIBla}[N|n]o${RCol}"
+      ;;
+    esac
+  done
+}
+
+function confirm_ynas() {
+  local confmsg="$1"
+  local -i flip=${2:-0}
+  local ynmsg="${Yel}[y]es${RCol} / ${On_Yel}${BIBla}[N]o${RCol} / ${Yel}[a]ll${RCol} / ${Yel}[s]kip rest${RCol}"
+  if [[ $flip -eq 1 ]]; then
+    ynmsg="${On_Yel}${BIBla}[Y]es${RCol} / ${Yel}[n]o${RCol} / ${Yel}[a]ll${RCol} / ${Yel}[s]kip rest${RCol}"
+  fi
+  while true; do
+    log "${confmsg:-Are you sure?}\n${Yel}${ynmsg}${RCol}"
+    read -rp "> " yn
+    case $yn in
+    [Yy]*)
+      return 0
+      ;;
+    [Nn]*)
+      return 1
+      ;;
+    [Aa]*)
+      return 2
+      ;;
+    [Ss]*)
+      return 3
+      ;;
+    "")
+      if [[ $flip -eq 1 ]]; then
+        return 0
+      else
+        return 1
+      fi
+      ;;
+    *)
+      log "Please answer ${On_Yel}${BIBla}[Y|y]es${RCol}, ${On_Yel}${BIBla}[N|n]o${RCol}, ${On_Yel}${BIBla}[A|a]ll${RCol}, or ${On_Yel}${BIBla}[S|s]kip${RCol}"
+      ;;
+    esac
+  done
+}
+
+function purge() {
+  vlog "${Dbg}purge() ${Yel}${*}${RCol}"
+  if [[ $# -lt 2 ]]; then
+    err+=1
+    log "${Err}expected 2 arguments, got ${Yel}$#${RCol}"
+    return 1
+  fi
+  local subvol="$1"
+  shift
+  local target="$*"
+
+  local ro
+  ro="$(btrfs property get -t subvol "$subvol" ro)" || {
+    err+=1
+    log "${Wrn}not a subvol: ${Yel}$subvol${RCol}. Skipping..."
+    return 2
+  }
+  ro="${ro/ro=/}"
+
+  vlog "${Dbg}target"
+  vlog "  target: ${Cya}$target${RCol}"
+  vlog "  subvol: ${Cya}$subvol${RCol}"
+  vlog "  ro:     ${Cya}$ro${RCol}"
+
+  if [[ $ro == "true" ]]; then
+    run "${CMD_BTRFS[@]}" property set -t subvol "$subvol" ro false || {
+      err+=1
+      log "${Wrn}unable to set ${Yel}ro=false${RCol} for subvol ${Yel}$subvol${RCol}. Skipping..."
+      return 2
+    }
+  fi
+
+  run "${CMD_RM[@]}" "$target" || {
+    err+=1
+    log "${Err}unable to remove ${Yel}$target${RCol}"
+    return 2
+  }
+
+  if [[ $ro == "true" ]]; then
+    run "${CMD_BTRFS[@]}" property set -t subvol "$subvol" ro true || {
+      err+=1
+      log "${Err}unable to re-set ${Yel}ro=true${RCol} for subvol ${Yel}$subvol${RCol}"
+      return 2
+    }
+  fi
+}
+
+function parse_subvol_backups() {
+  vlog "${Dbg}parse_subvol_backups() ${Yel}${*}${RCol}"
+  local subvol="$*"
+  local res
+  res="$(irun "${CMD_BTRBK[@]}" list backups "$subvol")" || return 2
+
+  while read -r l; do
+    local format type source_host source_port source_path \
+      snapshot_path snapshot_name status target_host target_port \
+      target_path target_type source_rsh target_rsh
+
+    eval "$l"
+    vlog "${Dbg}backup"
+    vlog "  format              ${Cya}$format             ${RCol}"
+    vlog "  type                ${Cya}$type               ${RCol}"
+    vlog "  source_host         ${Cya}$source_host        ${RCol}"
+    vlog "  source_port         ${Cya}$source_port        ${RCol}"
+    vlog "  source_path         ${Cya}$source_path        ${RCol}"
+    vlog "  snapshot_path       ${Cya}$snapshot_path      ${RCol}"
+    vlog "  snapshot_name       ${Cya}$snapshot_name      ${RCol}"
+    vlog "  status              ${Cya}$status             ${RCol}"
+    vlog "  target_host         ${Cya}$target_host        ${RCol}"
+    vlog "  target_port         ${Cya}$target_port        ${RCol}"
+    vlog "  target_path         ${Cya}$target_path        ${RCol}"
+    vlog "  target_type         ${Cya}$target_type        ${RCol}"
+    vlog "  source_rsh          ${Cya}$source_rsh         ${RCol}"
+    vlog "  target_rsh          ${Cya}$target_rsh         ${RCol}"
+
+    if [[ -n "$target_path" ]]; then
+      echo "$target_path"
+    fi
+  done <<< "$res"
+}
+
+function parse_subvol_snapshots() {
+  vlog "${Dbg}parse_subvol_snapshots() ${Yel}${*}${RCol}"
+  local subvol="$*"
+  local res
+  res="$(irun "${CMD_BTRBK[@]}" list snapshots "$subvol")" || return 2
+
+  while read -r l; do
+    local format type source_host source_port source_path \
+      snapshot_path snapshot_name status target_host target_port \
+      target_path target_type source_rsh target_rsh
+
+    eval "$l"
+    vlog "${Dbg}snapshot"
+    vlog "  format              ${Cya}$format             ${RCol}"
+    vlog "  type                ${Cya}$type               ${RCol}"
+    vlog "  source_host         ${Cya}$source_host        ${RCol}"
+    vlog "  source_port         ${Cya}$source_port        ${RCol}"
+    vlog "  source_path         ${Cya}$source_path        ${RCol}"
+    vlog "  snapshot_path       ${Cya}$snapshot_path      ${RCol}"
+    vlog "  snapshot_name       ${Cya}$snapshot_name      ${RCol}"
+    vlog "  status              ${Cya}$status             ${RCol}"
+    vlog "  target_host         ${Cya}$target_host        ${RCol}"
+    vlog "  target_port         ${Cya}$target_port        ${RCol}"
+    vlog "  target_path         ${Cya}$target_path        ${RCol}"
+    vlog "  target_type         ${Cya}$target_type        ${RCol}"
+    vlog "  source_rsh          ${Cya}$source_rsh         ${RCol}"
+    vlog "  target_rsh          ${Cya}$target_rsh         ${RCol}"
+
+    if [[ -n "$snapshot_path" ]]; then
+      echo "$snapshot_path"
+    else
+      echo "snapshot_path not found" >&2
+      exit 1
+    fi
+  done <<< "$res"
+}
+
+function parse_subvol() {
+  vlog "${Dbg}parse_subvol() ${Yel}${*}${RCol}"
+  local path="$*"
+  irun "${CMD_BTRFS[@]}" subvolume show "$path" \| head -1 || return 2
+}
+
+function parse_path() {
+  vlog "${Dbg}parse_path() ${Yel}${*}${RCol}"
+  local path="$*"
+  local res
+  res="$(irun "${CMD_BTRBK[@]}" origin "$path" \| head -1)" || return 2
+  local format tree uuid parent_uuid received_uuid recursion
+  eval "$res"
+  vlog "${Dbg}subvolume at ${Yel}$path${RCol}"
+  vlog "  format              ${Cya}$format             ${RCol}"
+  vlog "  tree                ${Cya}$tree               ${RCol}"
+  vlog "  uuid                ${Cya}$uuid               ${RCol}"
+  vlog "  parent_uuid         ${Cya}$parent_uuid        ${RCol}"
+  vlog "  received_uuid       ${Cya}$received_uuid      ${RCol}"
+  vlog "  recursion           ${Cya}$recursion          ${RCol}"
+
+  echo "$tree"
+}
+
+function btrbk_get_lockfile() {
+  vlog "${Dbg}btrbk_get_lockfile()"
+  local res
+  res="$(irun "${CMD_BTRBK[@]}" config print-all)" || {
+    log "${Wrn}unable to get btrbk config"
+    return 2
+  }
+  local lockfile
+  if ! eval "$(awk '/^\s*lockfile\s*(.+)/ && $2 != "<unset>" { print "lockfile=" $2; exit 0 } END { exit 1 }' <<< "$res")" \
+    || ! [[ -v lockfile ]]; then
+    return 2
+  fi
+  echo "$lockfile"
+}
+
+function lock() {
+  vlog "${Dbg}lock()"
+  perl << EOF &
+    \$lf="$BTRBK_LOCKFILE";
+    unless(open(LOCKFILE, ">>\$lf")) {
+      print("\$lf: open error: \$!\\n");
+      exit 1;
+    }
+
+    unless(flock(LOCKFILE, 6)) {
+      print("\$lf: flock error: \$!\\n");
+      exit 1;
+    }
+
+    while(true) {
+      sleep 1;
+    }
+EOF
+  local -i pid=$!
+  sleep 0.1
+  local n
+  if ! ( n="$(ps --format=fname --no-headers $pid)" && [[ $n == "perl" ]] ); then
+    log "${Err}lock failed"
+    return 2
+  fi
+  disown $pid || {
+    log "${Err}disown lock ${Yel}$pid${RCol} failed"
+    return 2
+  }
+  btrbk_lock_pid=$pid
+  vlog "${Dbg}locked $BTRBK_LOCKFILE (btrbk_lock_pid=${Yel}$btrbk_lock_pid${RCol})"
+}
+
+function unlock() {
+  vlog "${Dbg}unlock()"
+  if [[ $btrbk_lock_pid -gt 1 ]]; then
+    kill $btrbk_lock_pid || {
+      vlog "${Wrn}unable to kill lock process (btrbk_lock_pid=${Yel}$btrbk_lock_pid${RCol})"
+      return 2
+    }
+    vlog "${Dbg}unlocked $BTRBK_LOCKFILE (btrbk_lock_pid=${Yel}$btrbk_lock_pid${RCol})"
+  # else
+  #   vlog "${Wrn}lock not found (btrbk_lock_pid=${Yel}$btrbk_lock_pid${RCol})"
+  fi
+  btrbk_lock_pid=0
+}
+
+function main() {
+  vlog "${Dbg}main() ${Yel}${*}${RCol}"
+
+  trap 'cleanup' EXIT
+
+  local -i apply_source=0
+  local -i apply_snapshots=1
+  local -i apply_backups=1
+  local -i recursive=0
+  local -i secure=0
+  local -i filter_default=1
+
+  local -i OPTIND=0
+  local OPTARG opt
+  while getopts "vdhHC:L:aSsbrxip:" opt "$@"; do
+    case $opt in
+    v)
+      VERBOSE=1
+      ;;
+    d)
+      # VERBOSE=1
+      DRY_RUN=1
+      ;;
+    h)
+      usage
+      return 0
+      ;;
+    H)
+      usage H
+      return 0
+      ;;
+    C)
+      BTRBK_CONFIG="$OPTARG"
+      CMD_BTRBK+=(--config "$BTRBK_CONFIG")
+      ;;
+    L)
+      BTRBK_LOCKFILE="$OPTARG"
+      # CMD_BTRBK+=(--lockfile "$BTRBK_CONFIG")
+      ;;
+    a | b | S | s)
+      if [[ $filter_default -eq 1 ]]; then
+        filter_default=0
+        apply_source=0
+        apply_snapshots=0
+        apply_backups=0
+      fi
+      ;;&
+    a)
+      apply_source=1
+      apply_snapshots=1
+      apply_backups=1
+      ;;
+    b)
+      apply_backups=1
+      ;;
+    S)
+      apply_source=1
+      ;;
+    s)
+      apply_snapshots=1
+      ;;
+    r)
+      recursive=1
+      ;;
+    x)
+      secure=1
+      ;;
+    i)
+      INTERACTIVE=1
+      ;;
+    p)
+      NPROC=$OPTARG
+      if [[ $NPROC -lt 1 ]]; then
+        log "${Err}process count must be > 0; got ${Yel}$NPROC${RCol}"
+        return 1
+      fi
+      ;;
+    \?)
+      return 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  vlog "${Dbg}" \
+    "-v: ${Pur}$VERBOSE${RCol}" \
+    " -d: ${Pur}$DRY_RUN${RCol}" \
+    " -C: ${Pur}$BTRBK_CONFIG${RCol}" \
+    " -L: ${Pur}$BTRBK_LOCKFILE${RCol}" \
+    " -S: ${Pur}$apply_source${RCol}" \
+    " -s: ${Pur}$apply_snapshots${RCol}" \
+    " -b: ${Pur}$apply_backups${RCol}" \
+    " -r: ${Pur}$recursive${RCol}" \
+    " -x: ${Pur}$secure${RCol}" \
+    " -i: ${Pur}$INTERACTIVE${RCol}" \
+    " -p: ${Pur}$NPROC${RCol}"
+
+  if [[ -z "$BTRBK_LOCKFILE" ]]; then
+    BTRBK_LOCKFILE="$(btrbk_get_lockfile)" || {
+      log "${Err}unable to determine btrbk lockfile"
+      return 2
+    }
+  fi
+
+  if [[ -n "$BTRBK_LOCKFILE" ]]; then
+    local btrbk_lockdir
+    btrbk_lockdir="$(dirname "$BTRBK_LOCKFILE")"
+    if [[ ! -d "$btrbk_lockdir" ]]; then
+      mkdir -p "$btrbk_lockdir" || {
+        err+=1
+        log "${Err}btrbk lockfile: unable to create directory ${Yel}$btrbk_lockdir${RCol}" >&2
+        return 2
+      }
+    fi
+    vlog "${Dbg}btrbk lockfile: ${Pur}$BTRBK_LOCKFILE${RCol}"
+  fi
+
+  if [[ $secure -eq 1 ]]; then
+    CMD_RM=("$(command -v srm)" -dv) || {
+      err+=1
+      log "${Err}secure removal: dependency ${Yel}srm${RCol} not met" >&2
+      return 2
+    }
+  fi
+
+  if [[ $recursive -eq 1 ]]; then
+    CMD_RM+=("-r")
+  fi
+
+  if [[ $# -lt 1 ]]; then
+    err+=1
+    log "${Err}expected at least 1 positional arguments"
+    return 1
+  fi
+
+  local -a paths=("$@")
+  vlog "${Dbg}paths: ${Cya}${paths[*]}${RCol}"
+
+  local -A targets=()
+  for p in "${paths[@]}"; do
+    local path ppath subvol_path
+    path="$(realpath -m "$p")"
+    ppath="$(dirname "$path")"
+    subvol_path="$(parse_path "$path")" || subvol_path="$(parse_path "$ppath")" || {
+      err+=1
+      log "${Err}unable to determine subvol path for path ${Yel}${path}${RCol}. Skipping..."
+      continue
+    }
+
+    if [[ "$path" -ef "$subvol_path" ]]; then
+      err+=1
+      log "${Wrn}subvolume ${Yel}${subvol_path}${RCol} ignored; use ${Blu}btrfs subvolume delete${RCol} instead. Skipping..."
+      continue
+    fi
+
+    subvol="$(parse_subvol "$subvol_path")" || {
+      err+=1
+      log "${Err}unable to get subvol for ${Yel}${subvol_path}${RCol}. Skipping..."
+      continue
+    }
+
+    local rel
+    rel="$(realpath -m --relative-to="$subvol_path" "$path")"
+
+    if [[ $apply_source -eq 1 ]]; then
+      local src_rel
+      if src_rel="$(realpath -qe "$subvol_path/$rel")"; then
+        targets["$src_rel"]="$subvol_path"
+      fi
+    fi
+    if [[ $apply_snapshots -eq 1 ]]; then
+      local ss
+      for ss in $(parse_subvol_snapshots "$subvol"); do
+        local ss_rel
+        if ss_rel="$(realpath -qe "$ss/$rel")"; then
+          targets["$ss_rel"]="$ss"
+        fi
+      done
+    fi
+    if [[ $apply_backups -eq 1 ]]; then
+      local bu
+      for bu in $(parse_subvol_backups "$subvol"); do
+        local bu_rel
+        if bu_rel="$(realpath -qe "$bu/$rel")"; then
+          targets["$bu_rel"]="$bu"
+        fi
+      done
+    fi
+  done
+
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    log "${Wrn}no candidates for deletion"
+    exit 2
+  fi
+
+  vlog "${Ifo}${Cya}${#targets[@]}${RCol} candidates for deletion"
+
+  local target
+  local -i i=0
+  # TODO: make shellcheck happy
+  for target in $(sort -g <<< "$(printf '%s\n' "${!targets[@]}")"); do
+    i+=1
+    local subvol="${targets[$target]}"
+    if [[ $INTERACTIVE -eq 1 ]]; then
+      confirm_ynas "(${Cya}$i${RCol}/${Cya}${#targets[@]}${RCol}) Confirm: permanently remove ${Yel}$target${RCol}?" 1 || {
+        local -i c=$?
+        if [[ $c -eq 1 ]]; then
+          vlog "${Dbg}skipping ${Yel}$target${RCol}..."
+          continue
+        elif [[ $c -eq 2 ]]; then
+          INTERACTIVE=2
+        elif [[ $c -eq 3 ]]; then
+          break
+        fi
+      }
+    fi
+
+    sched_purge "$subvol" "$target" || {
+      local c=$?
+      if [[ $c -eq 2 ]]; then
+        continue
+      fi
+      err+=1
+      log "${Err}removal failed for ${Yel}$target${RCol}"
+      return 3
+    }
+  done
+
+  if [[ ${#purge_targets[@]} -eq 0 ]]; then
+    log "${Wrn}no targets selected"
+    exit 2
+  fi
+
+  if [[ $INTERACTIVE -ge 1 ]]; then
+    log "${Wrn}The following files will be permanently removed:"
+    local -i i
+    for i in "${!purge_targets[@]}"; do
+      log " - ${Yel}${purge_targets[$i]}${RCol}"
+    done
+    confirm_yn "Continue?" 1 || return 2
+  fi
+
+  lock
+  local i=0
+  while true; do
+    if [[ $i -gt 0 ]]; then
+      sleep "$TICK_INTERVAL"
+    fi
+    i+=1
+    # shellcheck disable=2119
+    local -i c=0
+    tick || c=$?
+    case $c in
+    0)
+      if [[ ${#cmd_queue[@]} -eq 0 ]]; then
+        wait -n || true
+      fi
+      ;;
+    2)
+      if [[ $(jobs -r | wc -l) -eq 0 && ${#cmd_queue[@]} -eq 0 ]]; then
+        log "${Ifo}completed"
+        return 0
+      fi
+      ;;
+    3)
+      wait -n || true
+      ;;
+    *)
+      log "${Wrn}abnormal exit code from tick: ${Yel}$c${RCol}"
+      ;;
+    esac
+  done
+}
+
+function cleanup() {
+  local -i c=$?
+  local color="$Gre"
+  if [[ $c -gt 0 ]]; then
+    color="$Red"
+  fi
+
+  unlock
+
+  vlog "${Dbg}exiting with code ${color}$c${RCol}"
+
+  # TODO: make sure all errors increment this counter
+  if [[ $err -gt 0 ]]; then
+    log "${Wrn}${Yel}$err${RCol} error(s) occurred"
+  fi
+
+  case $c in
+  0)
+    exit 0
+    ;;
+  1)
+    usage
+    exit 1
+    ;;
+  *)
+    exit $c
+    ;;
+  esac
+}
+
+if [[ -v BASH_SOURCE[0] && "$0" == "${BASH_SOURCE[0]}" ]]; then
+  main "$@"
+fi
