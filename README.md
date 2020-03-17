@@ -38,6 +38,9 @@ WARNING
   scenarios. There is a high risk of bugs that will lead to data loss. Proceed
   at your own risk.
 
+WARNING
+  support for special characters in filenames is flaky
+
 Notes
   Safety
   btrbk-purge is a utility for file deletion, and as such its usage comes with the
