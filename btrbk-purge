@@ -754,7 +754,7 @@ function main() {
   local -i num_targets=0
   for p in "${paths[@]}"; do
     local path ppath subvol_path
-    path="$(realpath -m "$p")"
+    path="$(realpath -sqm "$p")"
     ppath="$(dirname "$path")"
     subvol_path="$(parse_path "$path")" || subvol_path="$(parse_path "$ppath")" || {
       err+=1
@@ -775,12 +775,12 @@ function main() {
     }
 
     local rel
-    rel="$(realpath -m --relative-to="$subvol_path" "$path")"
+    rel="$(realpath -sqm --relative-to="$subvol_path" "$path")"
 
     if [[ $apply_source -eq 1 ]]; then
       local src_rel
-      if src_rel="$(realpath -qe "$subvol_path/$rel")"; then
-        # subvol_targets["$src_rel"]="$subvol_path"
+      if src_rel="$(realpath -sqm "$subvol_path/$rel")" \
+        && [[ -e "$src_rel" || -L "$src_rel" ]]; then
         if [[ -v subvol_targets["$subvol_path"] ]]; then
           subvol_targets["$subvol_path"]+=":"
         fi
@@ -792,8 +792,8 @@ function main() {
       local ss
       for ss in $(parse_subvol_snapshots "$subvol"); do
         local ss_rel
-        if ss_rel="$(realpath -qe "$ss/$rel")"; then
-          # subvol_targets["$ss_rel"]="$ss"
+        if ss_rel="$(realpath -sqm "$ss/$rel")" \
+          && [[ -e "$ss_rel" || -L "$ss_rel" ]]; then
           if [[ -v subvol_targets["$ss"] ]]; then
             subvol_targets["$ss"]+=":"
           fi
@@ -806,8 +806,8 @@ function main() {
       local bu
       for bu in $(parse_subvol_backups "$subvol"); do
         local bu_rel
-        if bu_rel="$(realpath -qe "$bu/$rel")"; then
-          # subvol_targets["$bu_rel"]="$bu"
+        if bu_rel="$(realpath -sqm "$bu/$rel")" \
+          && [[ -e "$bu_rel" || -L "$bu_rel" ]]; then
           if [[ -v subvol_targets["$bu"] ]]; then
             subvol_targets["$bu"]+=":"
           fi
