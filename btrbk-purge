@@ -29,8 +29,8 @@ prog="$(basename "$0")"
 
 declare -g     version="v0.1.0"
 declare -g     authors=("2019-2020 Maddison Hellstrom <github.com/b0o>")
-declare -g  repository="https://github.com/b0o/btrbk-purge"
-declare -g      issues="https://github.com/b0o/btrbk-purge/issues"
+declare -g  repository="https://github.com/b0o/btrfs-extras"
+declare -g      issues="https://github.com/b0o/btrfs-extras/issues"
 declare -g     license="GPL-3.0-or-later"
 declare -g license_url="https://www.gnu.org/licenses/gpl-3.0.txt"
 
@@ -50,7 +50,7 @@ Options
   Btrbk
   -C <config>   the configuration file to be used by btrbk; if unspecified, the
                 default btrbk configuration file will be used.
-  -L <lockfile> the lockfile used by btrbk; if unspecified, btrbk-purge will
+  -L <lockfile> the lockfile used by btrbk; if unspecified, $prog will
                 attempt to determine the lockfile from the btrbk configuration
                 file.
 
@@ -89,7 +89,7 @@ Notes
 
   Lockfiles
   It is important to ensure your btrbk installation is correctly configured to
-  use a lockfile. This will ensure that btrbk-purge doesn't attempt to alter a
+  use a lockfile. This will ensure that $prog doesn't attempt to alter a
   snapshot that btrbk is operating on, which could lead to loss of filesystem
   integrity.
 

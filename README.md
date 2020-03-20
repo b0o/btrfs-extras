@@ -1,5 +1,7 @@
-btrbk-purge ![status: experimental](https://img.shields.io/badge/status-experimental-red?style=flat) [![version](https://img.shields.io/github/v/tag/b0o/btrfs-extras?style=flat&color=yellow&label=version&sort=semver)](https://github.com/b0o/btrfs-extras/releases) [![license: gpl-3.0-or-later](https://img.shields.io/github/license/b0o/btrfs-extras?style=flat&color=green)](https://opensource.org/licenses/GPL-3.0) 
+btrfs-extras ![status: experimental](https://img.shields.io/badge/status-experimental-red?style=flat) [![version](https://img.shields.io/github/v/tag/b0o/btrfs-extras?style=flat&color=yellow&label=version&sort=semver)](https://github.com/b0o/btrfs-extras/releases) [![license: gpl-3.0-or-later](https://img.shields.io/github/license/b0o/btrfs-extras?style=flat&color=green)](https://opensource.org/licenses/GPL-3.0) 
 ===
+
+### btrbk-purge
 
 ```
 Usage: btrbk-purge [options] <path> [path ...]
@@ -59,8 +61,8 @@ Notes
   not supported.
 
 Version:    v0.1.0
-Repository: https://github.com/b0o/btrbk-purge
-Issues:     https://github.com/b0o/btrbk-purge/issues
+Repository: https://github.com/b0o/btrfs-extras
+Issues:     https://github.com/b0o/btrfs-extras/issues
 License:    GPL-3.0-or-later
             https://www.gnu.org/licenses/gpl-3.0.txt
 Copyright:  2019-2020 Maddison Hellstrom <github.com/b0o>
