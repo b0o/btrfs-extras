@@ -40,7 +40,8 @@ btrfs-extras ![status: experimental](https://img.shields.io/badge/status-experim
 ===
 EOF
 
-  declare -i i=0
+  local prog
+  local -i i=0
   for prog in "${progs[@]}"; do
     [[ $i -gt 0 ]] && echo -e "\n---"
     i=$((i + 1))
