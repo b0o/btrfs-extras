@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+
+# Convert between normal directories and btrfs subvolumes
+#
+# Copyright (C) 2019-2020 Maddison Hellstrom <https://github.com/b0o>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# TODO: add unit tests
+
+set -Eeuo pipefail
+shopt -s inherit_errexit
+
+declare -g prog
+prog="$(basename "$0")"
+
+declare -g     version="v0.1.0"
+declare -g     authors=("2020 Maddison Hellstrom <github.com/b0o>")
+declare -g  repository="https://github.com/b0o/btrfs-extras"
+declare -g      issues="https://github.com/b0o/btrfs-extras/issues"
+declare -g     license="GPL-3.0-or-later"
+declare -g license_url="https://www.gnu.org/licenses/gpl-3.0.txt"
+
+declare -i DRY_RUN=0
+declare -i VERBOSE=0
+declare -i KEEP=0
+
+declare -xg RCol='\e[0m'
+
+# Regular
+declare -xg Bla='\e[0;30m'
+declare -xg Red='\e[0;31m'
+declare -xg Gre='\e[0;32m'
+declare -xg Yel='\e[0;33m'
+declare -xg Blu='\e[0;34m'
+declare -xg Pur='\e[0;35m'
+declare -xg Cya='\e[0;36m'
+declare -xg Whi='\e[0;37m'
+
+# Bold
+declare -xg BBla='\e[1;30m'
+declare -xg BRed='\e[1;31m'
+declare -xg BGre='\e[1;32m'
+declare -xg BYel='\e[1;33m'
+declare -xg BBlu='\e[1;34m'
+declare -xg BPur='\e[1;35m'
+declare -xg BCya='\e[1;36m'
+declare -xg BWhi='\e[1;37m'
+
+# Underline
+declare -xg UBla='\e[4;30m'
+declare -xg URed='\e[4;31m'
+declare -xg UGre='\e[4;32m'
+declare -xg UYel='\e[4;33m'
+declare -xg UBlu='\e[4;34m'
+declare -xg UPur='\e[4;35m'
+declare -xg UCya='\e[4;36m'
+declare -xg UWhi='\e[4;37m'
+
+# High Intensity
+declare -xg IBla='\e[0;90m'
+declare -xg IRed='\e[0;91m'
+declare -xg IGre='\e[0;92m'
+declare -xg IYel='\e[0;93m'
+declare -xg IBlu='\e[0;94m'
+declare -xg IPur='\e[0;95m'
+declare -xg ICya='\e[0;96m'
+declare -xg IWhi='\e[0;97m'
+
+# BoldHigh Intens
+declare -xg BIBla='\e[1;90m'
+declare -xg BIRed='\e[1;91m'
+declare -xg BIGre='\e[1;92m'
+declare -xg BIYel='\e[1;93m'
+declare -xg BIBlu='\e[1;94m'
+declare -xg BIPur='\e[1;95m'
+declare -xg BICya='\e[1;96m'
+declare -xg BIWhi='\e[1;97m'
+
+# Background
+declare -xg On_Bla='\e[40m'
+declare -xg On_Red='\e[41m'
+declare -xg On_Gre='\e[42m'
+declare -xg On_Yel='\e[43m'
+declare -xg On_Blu='\e[44m'
+declare -xg On_Pur='\e[45m'
+declare -xg On_Cya='\e[46m'
+declare -xg On_Whi='\e[47m'
+
+# High Intensity Backgrounds
+declare -xg On_IBla='\e[0;100m'
+declare -xg On_IRed='\e[0;101m'
+declare -xg On_IGre='\e[0;102m'
+declare -xg On_IYel='\e[0;103m'
+declare -xg On_IBlu='\e[0;104m'
+declare -xg On_IPur='\e[0;105m'
+declare -xg On_ICya='\e[0;106m'
+declare -xg On_IWhi='\e[0;107m'
+
+# Status Messages
+declare -xg Ifo="${IGre}[INFO]  ${RCol}"
+declare -xg Wrn="${IYel}[WARN]  ${RCol}"
+declare -xg Err="${IRed}[ERR]   ${RCol}"
+declare -xg Dbg="${ICya}[DEBUG] ${RCol}"
+
+function log() {
+  echo -e "$*" >&2
+}
+
+function vlog() {
+  if [[ $VERBOSE -eq 1 ]]; then
+    log "$*"
+  fi
+}
+
+function run() {
+  if [[ $VERBOSE -eq 1 ]]; then
+    vlog "${Dbg}run '${Yel}${*}${RCol}'"
+  fi
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "${IYel}--- DRY RUN ---${RCol}"
+    return 0
+  fi
+  eval "$@"
+}
+
+function usage() {
+  cat >&2 << EOF
+Usage: $prog [opts] <command> [<args>]
+
+Convert between normal directories and btrfs subvolumes
+
+Options:
+  -k     keep backup of original <source> dir/subvol
+  -v     verbose output
+  -d     dry-run (implies -v)
+  -h     show short usage information
+  -H     show extended usage information
+
+Commands:
+  to-subvol
+  dir-to-subvol <source> [dest]
+      Convert normal directory source to btrfs subvolume.
+      If dest is not supplied, conversion is done in-place.
+
+  to-dir
+  subvol-to-dir <source> [dest]
+      Convert btrfs subvolume source to normal directory.
+      If dest is not supplied, conversion is done in-place.
+
+EOF
+  if ! [[ $# -gt 0 && $1 == "H" ]]; then
+    return 0
+  fi
+  cat >&2 << EOF
+Version:    $version
+Repository: $repository
+Issues:     $issues
+License:    $license
+            $license_url
+Copyright:  $(printf '%s\n' "${authors[0]}")
+$(printf '            %s\n' "${authors[@]:1}")
+EOF
+}
+
+function dir_to_subvol() {
+  if [[ $# -lt 1 ]]; then
+    log "${Err}argument expected"
+    return 1
+  fi
+
+  local src dest bak
+
+  if ! src="$(realpath -qe -- "$1")" || [[ ! -d "$src" ]]; then
+    log "${Err}not a directory: '${Yel}$1${RCol}'"
+    return 1
+  fi
+
+  sudo btrfs subvolume list -o "$src" > /dev/null 2>&1 || {
+    log "${Err}source is not located within a btrfs filesystem: '${Yel}${src}${RCol}'"
+    return 1
+  }
+
+  dest="$(realpath -m -- "${2:-$src}")"
+
+  sudo btrfs subvolume list -o "$(dirname "$dest")" > /dev/null 2>&1 || {
+    log "${Err}dest parent directory is not located within a btrfs filesystem: '${Yel}${dest}${RCol}'"
+    return 1
+  }
+
+  if [[ -e "$dest" && ! "$dest" -ef "$src" ]]; then
+    log "${Err}file exists at dest path: ${Yel}${dest}${RCol}"
+    return 1
+  fi
+
+  if sudo btrfs subvolume show "$src" > /dev/null 2>&1; then
+    log "${Wrn}source is already a btrfs subvolume: '${Yel}${src}${RCol}'"
+    if [[ ! "$dest" -ef "$src" ]]; then
+      vlog "${Ifo}move '${Yel}${src}${RCol}' to '${Yel}${dest}${RCol}'"
+      run mv "$src" "$dest"
+    fi
+    return 0
+  fi
+
+  bak="$src"
+
+  local -i move=0
+  if [[ "$dest" -ef "$src" ]]; then
+    bak="${src}.bak_$(mktemp -u XXXXXX)"
+    if [[ -e "$bak" ]]; then
+      log "${Err}file exists at backup path: ${Yel}${bak}${RCol}"
+      return 1
+    fi
+    vlog "${Ifo}backup '${Cya}${src}${RCol}' to '${Cya}${bak}${RCol}'"
+    run mv "$src" "$bak"
+    move=1
+  fi
+
+  vlog "${Ifo}create dest btrfs subvolume '${Cya}${dest}${RCol}'"
+  run sudo btrfs subvolume create "$dest" > /dev/null
+
+  vlog "${Ifo}copy source ownership to dest"
+  run sudo chown --reference="$bak" "$dest"
+  run sudo chmod --reference="$bak" "$dest"
+
+  # if [[ $KEEP -eq 1 ]]; then
+  vlog "${Ifo}copy '${Cya}${bak}/*${RCol}' to '${Cya}${dest}${RCol}'"
+  run find "$bak" -maxdepth 1 -mindepth 1 -exec cp -r '{}' "$dest" '\;'
+  # log "${Wrn}keeping '${Cya}${bak}${RCol}'"
+  # else
+  #   vlog "${Ifo}move '${Cya}${bak}/*${RCol}' to '${Cya}${dest}${RCol}'"
+  #   run find "$bak" -maxdepth 1 -mindepth 1 -exec mv '{}' "$dest" '\;'
+  # fi
+
+  local res=""
+  if ! res="$(run sudo btrfs subvolume show "$dest")"; then
+    log "${Err}conversion failed: expected ${Yel}${dest}${RCol} to be a btrfs subvolume"
+    return 2
+  fi
+
+  if [[ $KEEP -eq 0 ]]; then
+    vlog "${Ifo}remove '${Cya}${bak}${RCol}'"
+    run rm -rfI "$bak"
+  fi
+
+  local msg="${Ifo}converted directory '${Cya}${src}${RCol}' into btrfs subvolume"
+  if [[ $move -eq 0 ]]; then
+    msg+=" at '${Cya}${dest}${RCol}'"
+  fi
+  if [[ -n "$res" ]]; then
+    msg+=":\n$res"
+  fi
+  vlog "$msg"
+}
+
+function subvol_to_dir() {
+  if [[ $# -lt 1 ]]; then
+    log "${Err}argument expected"
+    return 1
+  fi
+
+  local src dest bak
+
+  if ! src="$(realpath -qe -- "$1")" || [[ ! -d "$src" ]]; then
+    log "${Err}not a directory: '${Yel}$1${RCol}'"
+    return 1
+  fi
+
+  if ! sudo btrfs subvolume show "$src" > /dev/null 2>&1; then
+    log "${Err}source is not a btrfs subvolume: '${Yel}${src}${RCol}'"
+    return 1
+  fi
+
+  dest="$(realpath -m -- "${2:-$src}")"
+
+  if [[ -e "$dest" && ! "$dest" -ef "$src" ]]; then
+    log "${Err}file exists at dest path: ${Yel}${dest}${RCol}"
+    return 1
+  fi
+
+  bak="$src"
+
+  local -i move=0
+  if [[ "$dest" -ef "$src" ]]; then
+    bak="${src}.bak_$(mktemp -u XXXXXX)"
+    if [[ -e "$bak" ]]; then
+      log "${Err}file exists at backup path: ${Yel}${bak}${RCol}"
+      return 1
+    fi
+    vlog "${Ifo}backup '${Cya}${src}${RCol}' to '${Cya}${bak}${RCol}'"
+    run mv "$src" "$bak"
+    move=1
+  fi
+
+  vlog "${Ifo}create dest dir '${Cya}${dest}${RCol}'"
+  run mkdir "$dest"
+
+  vlog "${Ifo}copy source ownership to dest"
+  run sudo chown --reference="$bak" "$dest"
+  run sudo chmod --reference="$bak" "$dest"
+
+  # if [[ $KEEP -eq 1 ]]; then
+  vlog "${Ifo}copy '${Cya}${bak}/*${RCol}' to '${Cya}${dest}${RCol}'"
+  run find "$bak" -maxdepth 1 -mindepth 1 -exec cp -r '{}' "$dest" '\;'
+  #   log "${Wrn}keeping '${Cya}${bak}${RCol}'"
+  # else
+  #   vlog "${Ifo}move '${Cya}${bak}/*${RCol}' to '${Cya}${dest}${RCol}'"
+  #   run find "$bak" -maxdepth 1 -mindepth 1 -exec mv '{}' "$dest" '\;'
+  # fi
+
+  if [[ $KEEP -eq 0 ]]; then
+    vlog "${Ifo}delete btrfs subvolume '${Cya}${bak}${RCol}'"
+    run sudo btrfs subvolume delete --verbose --commit-after "$bak"
+  fi
+
+  local msg="${Ifo}converted btrfs subvolume '${Cya}${src}${RCol}' into directory"
+  if [[ $move -eq 0 ]]; then
+    msg+=" at '${Cya}${dest}${RCol}'"
+  fi
+  vlog "$msg"
+}
+
+function main() {
+  while getopts "vdhHk" opt "$@"; do
+    case $opt in
+    v)
+      VERBOSE=1
+      ;;
+    d)
+      DRY_RUN=1
+      VERBOSE=1
+      ;;
+    k)
+      KEEP=1
+      ;;
+    h)
+      usage
+      exit 0
+      ;;
+    H)
+      usage H
+      exit 0
+      ;;
+    \?)
+      exit 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  local cmd="${1}"
+  shift
+  case $cmd in
+  dir-to-subvol | to-subvol)
+    dir_to_subvol "$@"
+    ;;
+  subvol-to-dir | to-dir)
+    subvol_to_dir "$@"
+    ;;
+  *)
+    log "${Err}unknown command ${Yel}${cmd}${RCol}"
+    exit 1
+    ;;
+  esac
+}
+
+function cleanup() {
+  local -i c=$?
+  case $c in
+  0)
+    return
+    ;;
+  1)
+    usage
+    exit 1
+    ;;
+  *)
+    exit $c
+    ;;
+  esac
+}
+
+trap 'cleanup' EXIT
+
+main "$@"

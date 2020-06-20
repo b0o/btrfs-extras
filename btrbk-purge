@@ -22,7 +22,8 @@
 
 # TODO: add unit tests
 
-set -euo pipefail
+set -Eeuo pipefail
+shopt -s inherit_errexit
 
 declare -g prog
 prog="$(basename "$0")"

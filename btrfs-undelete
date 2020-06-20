@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+
+# Attempt to recover the most recent version of the given file or directory
+#
+# Copyright (C) 2019-2020 Maddison Hellstrom <https://github.com/b0o>
+# Copyright (C) 2013 Jörg Walter <info@syntax-k.de>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+set -Eeuo pipefail
+shopt -s inherit_errexit
+
+declare -g prog
+prog="$(basename "$0")"
+
+declare -g     version="v0.1.0"
+declare -g     authors=("2020 Maddison Hellstrom <github.com/b0o>" "2013 Jörg Walter <info@syntax-k.de>")
+declare -g  repository="https://github.com/b0o/btrfs-extras"
+declare -g      issues="https://github.com/b0o/btrfs-extras/issues"
+declare -g     license="GPL-3.0-or-later"
+declare -g license_url="https://www.gnu.org/licenses/gpl-3.0.txt"
+
+function usage() {
+  cat >&2 << EOF
+Usage: $prog [opts] <dev> <file/dir> <dest>
+
+Attempt to recover the most recent version of the given file or directory
+(recursively).
+
+<dev> must not be mounted, otherwise this program may appear to work but find
+nothing.
+
+<file/dir> must be specified relative to the filesystem root. It may contain *
+and ? as wildcards, but in that case, empty files might be 'recovered'. If
+<file/dir> is a single file name, this program tries to recover the most recent
+non-empty version of the file.
+
+<dest> must be a writable directory with enough free space to hold the files
+you're trying to restore.
+
+Options:
+  -h     show short usage information
+  -H     show extended usage information
+
+EOF
+  if ! [[ $# -gt 0 && $1 == "H" ]]; then
+    return 0
+  fi
+  cat >&2 << EOF
+Version:    $version
+Repository: $repository
+Issues:     $issues
+License:    $license
+            $license_url
+Copyright:  $(printf '%s\n' "${authors[0]}")
+$(printf '            %s\n' "${authors[@]:1}")
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+elif [[ $1 == "-h" ]]; then
+  usage
+  exit 0
+elif [[ $1 == "-H" ]]; then
+  usage H
+  exit 0
+fi
+
+if [[ ! -b "$1" || -z "$2" || -z "$3" ]]; then
+  usage
+  exit 1
+fi
+
+dev="$1"
+file="$2"
+
+file="${file#/}"
+file="${file%/}"
+regex="${file//\\/\\\\}"
+
+# quote regex special characters
+regex="${regex//./\.}"
+regex="${regex//+/\+}"
+regex="${regex//|/\|}"
+# regex="${regex//(/\(}"
+regex="${regex//)/\)}"
+regex="${regex//\[/\[}"
+regex="${regex//]/\]}"
+regex="${regex//\{/\{}"
+regex="${regex//\}/\}}"
+
+# treat shell wildcards specially
+regex="${regex//\*/.*}"
+regex="${regex//\?/.}"
+
+# extract number of slashes in order to get correct number of closing parens
+slashes="${regex//[^\/]/}"
+
+# build final regex
+regex="^/(|${regex//\//(|/}(|/.*${slashes//?/)}))\$"
+
+roots="$(mktemp --tmpdir btrfs-undelete.roots.XXXXX)"
+out="$(mktemp --tmpdir="$3" -d btrfs-undelete.XXXXX)"
+cd $out
+
+trap "rm $roots" EXIT
+trap "rm -r $out &> /dev/null; exit 1" SIGINT
+
+echo -ne "Searching roots..."
+btrfs-find-root "$dev" 2>&1 \
+  | grep ^Well \
+  | sed -r -e 's/Well block ([0-9]+).*/\1/' \
+  | sort -rn > $roots || exit 1
+echo
+
+i=0
+max="$(wc -l < $roots)"
+
+while read id; do
+  ((i += 1))
+  echo -e "Trying root $id... ($i/$max)"
+  btrfs restore -t $id --path-regex "$regex" "$dev" . &> /dev/null
+  if [ "$?" = 0 ]; then
+    found=$(find . -type f ! -size 0c | wc -l)
+    if [ $found -gt 0 ]; then
+      echo "Recovered $found non-empty file(s) into $out"
+      exit 0
+    fi
+    find . -type f -size 0c -exec echo "Found {} but it's empty" \; -delete
+  fi
+done < $roots
+rm -r $out
+echo "Didn't find '$file'"
+exit 1

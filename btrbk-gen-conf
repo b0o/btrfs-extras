@@ -1,0 +1,147 @@
+#!/bin/bash
+set -Eeuo pipefail
+shopt -s inherit_errexit
+
+declare -g prog
+prog="$(basename "$0")"
+
+declare -g     version="v0.1.0"
+declare -g     authors=("2020 Maddison Hellstrom <github.com/b0o>")
+declare -g  repository="https://github.com/b0o/btrfs-extras"
+declare -g      issues="https://github.com/b0o/btrfs-extras/issues"
+declare -g     license="GPL-3.0-or-later"
+declare -g license_url="https://www.gnu.org/licenses/gpl-3.0.txt"
+
+function usage() {
+  cat >&2 << EOF
+Usage: $prog [options] <conf>
+
+Automatically generate entries for your btrbk.conf file
+based on existing subvolumes.
+
+Expects <conf> to be a valid Bash script which defines the following
+variables:
+
+ROOT_SUBVOL (string)
+  The root subvol for which to generate the btrbk config
+
+SNAPSHOTS_FILTER (string)
+  A valid awk regular expression which matches the subvolume names of snapshots
+
+IGNORE_SUBVOLS (string array) (optional)
+  An array of subvolume names which should be ignored when generating the btrbk
+  config
+
+SUBVOL_EXTRAS (string -> string associative array) (optional)
+  An associative array of subvolume names mapping to any extra fields which should be
+  included in the subvolumes' configuration sections.
+
+Options
+  General
+  -h            show short usage information
+  -H            show extended usage information
+
+EOF
+  if ! [[ $# -gt 0 && $1 == "H" ]]; then
+    return 0
+  fi
+  cat >&2 << EOF
+Version:    $version
+Repository: $repository
+Issues:     $issues
+License:    $license
+            $license_url
+Copyright:  $(printf '%s\n' "${authors[0]}")
+$(printf '            %s\n' "${authors[@]:1}")
+EOF
+}
+
+function main() {
+  local -i OPTIND=0
+  local OPTARG opt
+  while getopts "hH" opt "$@"; do
+    case $opt in
+    h)
+      usage
+      return 0
+      ;;
+    H)
+      usage H
+      return 0
+      ;;
+    \?)
+      return 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  if [[ $# -eq 0 ]]; then
+    echo "error: expected <conf>" >&2
+    usage
+    return 1
+  fi
+
+  local conf="$1"
+
+  [[ -e "$conf" ]] || {
+    echo "error: conf not found: $conf" >&2
+    return 1
+  }
+
+  # shellcheck source=./btrbk-gen-conf.conf
+  source "$conf" || {
+    echo "error: failed loading conf: $conf" >&2
+    return 1
+  }
+
+  [[ -v ROOT_SUBVOL ]] || {
+    echo "error: failed loading conf: expected value for ROOT_SUBVOL" >&2
+    return 1
+  }
+
+  [[ -v SNAPSHOTS_FILTER ]] || {
+    echo "error: failed loading conf: expected value for SNAPSHOTS_FILTER" >&2
+    return 1
+  }
+
+  [[ -v IGNORE_SUBVOLS ]] || {
+    declare -ga IGNORE_SUBVOLS=()
+  }
+
+  [[ -v SUBVOL_EXTRAS ]] || {
+    declare -gA SUBVOL_EXTRAS=()
+  }
+
+  sudo btrfs subvolume list "$ROOT_SUBVOL" \
+    | awk '$9 !~ '/"$SNAPSHOTS_FILTER"/' { print $2 }' \
+    | xargs -i sudo btrfs inspect-internal subvolid-resolve '{}' "$ROOT_SUBVOL" \
+    | {
+      while read -r subvol; do
+        local prefix=""
+        local s
+        for s in "${IGNORE_SUBVOLS[@]}"; do
+          [[ "$subvol" == "$s" ]] && {
+            prefix="# "
+            break
+          }
+        done
+
+        local extra=""
+        for s in "${!SUBVOL_EXTRAS[@]}"; do
+          [[ "$subvol" == "$s" ]] && extra="${SUBVOL_EXTRAS["$s"]}"
+        done
+
+        printf '  %ssubvolume %s\n' "$prefix" "$subvol"
+        printf '  %s  snapshot_name         %s' "$prefix" "${subvol//\//_}"
+        if [[ -n "$extra" ]]; then
+          printf '\n%s\n' "$(sed -e '/^$/d; s/^\s+/  '"$prefix"'  /;' <<< "$extra")"
+        else
+          printf '\n'
+        fi
+        printf '\n'
+      done
+    }
+}
+
+main "$@"

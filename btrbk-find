@@ -1,0 +1,570 @@
+#!/usr/bin/env bash
+
+# Purge unwanted files/directories from all btrbk snapshots/backups at once.
+#
+# Copyright (C) 2019-2020 Maddison Hellstrom <https://github.com/b0o>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# TODO: add unit tests
+
+set -Eeuo pipefail
+shopt -s inherit_errexit
+
+declare -g prog
+prog="$(basename "$0")"
+
+declare -g     version="v0.1.0"
+declare -g     authors=("2019-2020 Maddison Hellstrom <github.com/b0o>")
+declare -g  repository="https://github.com/b0o/btrfs-extras"
+declare -g      issues="https://github.com/b0o/btrfs-extras/issues"
+declare -g     license="GPL-3.0-or-later"
+declare -g license_url="https://www.gnu.org/licenses/gpl-3.0.txt"
+
+function usage() {
+  cat >&2 << EOF
+Usage: $prog [options] <path> [path ...]
+
+Find all occurrances of a given file within your btrbk backups.
+
+Options
+  General
+  -v            verbose output
+  -h            show short usage information
+  -H            show extended usage information
+
+  Btrbk
+  -C <config>   the configuration file to be used by btrbk; if unspecified, the
+                default btrbk configuration file will be used.
+
+  Search locations
+  -a            search snapshots and backups [default]
+  -s            search snapshots only
+  -b            search backups only
+
+  Timespan filtering
+
+  For the following options, a <date> is expected to be a valid date string as
+  described in \`info date "General date syntax"\`.
+
+  Relative dates like '1 month ago' are supported.
+
+  -N <date>     only search within subvolumes newer than <date>
+  -O <date>     only search within subvolumes older than <date>
+
+  Uniqueness & Diffing
+
+  -U            only display the first seen of 2 or more identical versions of
+                a file; directories are ignored.
+
+  -D            open a graphical tool (diffuse) to view diffs between each
+                version of each file; directories are ignored; requires -U;
+                if using sudo, you may need to use sudo -e to export DISPLAY /
+                WAYLAND_DISPLAY for use by diffuse
+
+EOF
+  if ! [[ $# -gt 0 && $1 == "H" ]]; then
+    return 0
+  fi
+  cat >&2 << EOF
+Notes
+  Network Backups
+  $prog has not been developed with network backups in mind; they are currently
+  not supported.
+
+Version:    $version
+Repository: $repository
+Issues:     $issues
+License:    $license
+            $license_url
+Copyright:  $(printf '%s\n' "${authors[0]}")
+$(printf '            %s\n' "${authors[@]:1}")
+EOF
+}
+
+declare -gi VERBOSE=0
+
+declare -ga CMD_BTRFS
+declare -ga CMD_BTRBK
+CMD_BTRFS=("$(command -v btrfs)")
+CMD_BTRBK=("$(command -v btrbk)" -v --format raw)
+
+declare -g BTRBK_CONFIG=""
+
+declare -xg RCol='\e[0m'
+
+# Regular
+declare -xg Bla='\e[0;30m'
+declare -xg Red='\e[0;31m'
+declare -xg Gre='\e[0;32m'
+declare -xg Yel='\e[0;33m'
+declare -xg Blu='\e[0;34m'
+declare -xg Pur='\e[0;35m'
+declare -xg Cya='\e[0;36m'
+declare -xg Whi='\e[0;37m'
+
+# Bold
+declare -xg BBla='\e[1;30m'
+declare -xg BRed='\e[1;31m'
+declare -xg BGre='\e[1;32m'
+declare -xg BYel='\e[1;33m'
+declare -xg BBlu='\e[1;34m'
+declare -xg BPur='\e[1;35m'
+declare -xg BCya='\e[1;36m'
+declare -xg BWhi='\e[1;37m'
+
+# Underline
+declare -xg UBla='\e[4;30m'
+declare -xg URed='\e[4;31m'
+declare -xg UGre='\e[4;32m'
+declare -xg UYel='\e[4;33m'
+declare -xg UBlu='\e[4;34m'
+declare -xg UPur='\e[4;35m'
+declare -xg UCya='\e[4;36m'
+declare -xg UWhi='\e[4;37m'
+
+# High Intensity
+declare -xg IBla='\e[0;90m'
+declare -xg IRed='\e[0;91m'
+declare -xg IGre='\e[0;92m'
+declare -xg IYel='\e[0;93m'
+declare -xg IBlu='\e[0;94m'
+declare -xg IPur='\e[0;95m'
+declare -xg ICya='\e[0;96m'
+declare -xg IWhi='\e[0;97m'
+
+# BoldHigh Intens
+declare -xg BIBla='\e[1;90m'
+declare -xg BIRed='\e[1;91m'
+declare -xg BIGre='\e[1;92m'
+declare -xg BIYel='\e[1;93m'
+declare -xg BIBlu='\e[1;94m'
+declare -xg BIPur='\e[1;95m'
+declare -xg BICya='\e[1;96m'
+declare -xg BIWhi='\e[1;97m'
+
+# Background
+declare -xg On_Bla='\e[40m'
+declare -xg On_Red='\e[41m'
+declare -xg On_Gre='\e[42m'
+declare -xg On_Yel='\e[43m'
+declare -xg On_Blu='\e[44m'
+declare -xg On_Pur='\e[45m'
+declare -xg On_Cya='\e[46m'
+declare -xg On_Whi='\e[47m'
+
+# High Intensity Backgrounds
+declare -xg On_IBla='\e[0;100m'
+declare -xg On_IRed='\e[0;101m'
+declare -xg On_IGre='\e[0;102m'
+declare -xg On_IYel='\e[0;103m'
+declare -xg On_IBlu='\e[0;104m'
+declare -xg On_IPur='\e[0;105m'
+declare -xg On_ICya='\e[0;106m'
+declare -xg On_IWhi='\e[0;107m'
+
+# Status Messages
+declare -xg Ifo="${IGre}[INFO]  ${RCol}"
+declare -xg Wrn="${IYel}[WARN]  ${RCol}"
+declare -xg Err="${IRed}[ERR]   ${RCol}"
+declare -xg Dbg="${ICya}[DEBUG] ${RCol}"
+
+declare -gi filter_newer=-1
+declare -gi filter_older=-1
+
+function log() {
+  local stdin=0
+  if [[ $# -gt 0 && $1 == "-i" ]]; then
+    shift
+    stdin=1
+  fi
+  if [[ $stdin -eq 1 && -p /dev/stdin ]]; then
+    local line
+    while read -r line; do
+      echo -e "${*}$line" >&2
+    done
+  elif [[ $# -gt 0 ]]; then
+    echo -e "$*" >&2
+  fi
+  return 0
+}
+
+function vlog() {
+  local stdin=0
+  if [[ $# -gt 0 && $1 == "-i" ]]; then
+    stdin=1
+  fi
+  if [[ $VERBOSE -eq 1 ]]; then
+    log "$@"
+  elif [[ $stdin -eq 1 && -p /dev/stdin ]]; then # purge stdin
+    local line
+    while read -r line; do
+      true
+    done
+  fi
+  return 0
+}
+
+function _run() {
+  local -i c
+  eval "$*" || {
+    c=${PIPESTATUS[0]:-$?}
+    log "${Wrn}exit code: ${Yel}$c${RCol}"
+    # shellcheck disable=2086
+    return $c
+  }
+  vlog "${Ifo}success"
+}
+
+# idempotent run - used for operations which will not mutate system state; not
+# shielded by the DRY_RUN setting
+function irun() {
+  vlog "${Dbg}irun() ${Yel}${*}${RCol}"
+  _run "$@" 2> >(vlog -i "${Blu}[IRUN]${RCol}     ")
+}
+
+function parse_subvol_backups() {
+  vlog "${Dbg}parse_subvol_backups() ${Yel}${*}${RCol}"
+  local subvol="$*"
+  local res
+  res="$(irun "${CMD_BTRBK[@]}" list backups "$subvol")" || return 2
+
+  while read -r l; do
+    local format type source_host source_port source_path \
+      snapshot_path snapshot_name status target_host target_port \
+      target_path target_type source_rsh target_rsh
+
+    eval "$l"
+    vlog "${Dbg}backup"
+    vlog "  format              ${Cya}$format             ${RCol}"
+    vlog "  type                ${Cya}$type               ${RCol}"
+    vlog "  source_host         ${Cya}$source_host        ${RCol}"
+    vlog "  source_port         ${Cya}$source_port        ${RCol}"
+    vlog "  source_path         ${Cya}$source_path        ${RCol}"
+    vlog "  snapshot_path       ${Cya}$snapshot_path      ${RCol}"
+    vlog "  snapshot_name       ${Cya}$snapshot_name      ${RCol}"
+    vlog "  status              ${Cya}$status             ${RCol}"
+    vlog "  target_host         ${Cya}$target_host        ${RCol}"
+    vlog "  target_port         ${Cya}$target_port        ${RCol}"
+    vlog "  target_path         ${Cya}$target_path        ${RCol}"
+    vlog "  target_type         ${Cya}$target_type        ${RCol}"
+    vlog "  source_rsh          ${Cya}$source_rsh         ${RCol}"
+    vlog "  target_rsh          ${Cya}$target_rsh         ${RCol}"
+
+    if [[ -n "$target_path" ]]; then
+      echo "$target_path"
+    fi
+  done <<< "$res"
+}
+
+function parse_subvol_snapshots() {
+  vlog "${Dbg}parse_subvol_snapshots() ${Yel}${*}${RCol}"
+  local subvol="$*"
+  local res
+  res="$(irun "${CMD_BTRBK[@]}" list snapshots "$subvol")" || return 2
+
+  while read -r l; do
+    local format type source_host source_port source_path \
+      snapshot_path snapshot_name status target_host target_port \
+      target_path target_type source_rsh target_rsh
+
+    eval "$l"
+    vlog "${Dbg}snapshot"
+    vlog "  format              ${Cya}$format             ${RCol}"
+    vlog "  type                ${Cya}$type               ${RCol}"
+    vlog "  source_host         ${Cya}$source_host        ${RCol}"
+    vlog "  source_port         ${Cya}$source_port        ${RCol}"
+    vlog "  source_path         ${Cya}$source_path        ${RCol}"
+    vlog "  snapshot_path       ${Cya}$snapshot_path      ${RCol}"
+    vlog "  snapshot_name       ${Cya}$snapshot_name      ${RCol}"
+    vlog "  status              ${Cya}$status             ${RCol}"
+    vlog "  target_host         ${Cya}$target_host        ${RCol}"
+    vlog "  target_port         ${Cya}$target_port        ${RCol}"
+    vlog "  target_path         ${Cya}$target_path        ${RCol}"
+    vlog "  target_type         ${Cya}$target_type        ${RCol}"
+    vlog "  source_rsh          ${Cya}$source_rsh         ${RCol}"
+    vlog "  target_rsh          ${Cya}$target_rsh         ${RCol}"
+
+    if [[ -n "$snapshot_path" ]]; then
+      echo "$snapshot_path"
+    else
+      echo "snapshot_path not found" >&2
+      exit 1
+    fi
+  done <<< "$res"
+}
+
+function parse_subvol() {
+  vlog "${Dbg}parse_subvol() ${Yel}${*}${RCol}"
+  local path="$*"
+  irun "${CMD_BTRFS[@]}" subvolume show "$path" \| head -1 || return 2
+}
+
+function parse_path() {
+  vlog "${Dbg}parse_path() ${Yel}${*}${RCol}"
+  local path="$*"
+  local res
+  res="$(irun "${CMD_BTRBK[@]}" origin "$path" \| head -1)" || return 2
+  local format tree uuid parent_uuid received_uuid recursion
+  eval "$res"
+  vlog "${Dbg}subvolume at ${Yel}$path${RCol}"
+  vlog "  format              ${Cya}$format             ${RCol}"
+  vlog "  tree                ${Cya}$tree               ${RCol}"
+  vlog "  uuid                ${Cya}$uuid               ${RCol}"
+  vlog "  parent_uuid         ${Cya}$parent_uuid        ${RCol}"
+  vlog "  received_uuid       ${Cya}$received_uuid      ${RCol}"
+  vlog "  recursion           ${Cya}$recursion          ${RCol}"
+
+  echo "$tree"
+}
+
+function filter_subvols() {
+  local subvol
+  while read -r subvol; do
+    if [[ $filter_newer -gt 0 || $filter_older -gt 0 ]]; then
+      local -i subvol_created
+      subvol_created="$(irun "${CMD_BTRFS[@]}" subvolume show "$subvol" | gawk -F ':\\s+' '/Creation time:/ { print $2 }' | xargs --replace='{}' date --date='{}' +%s)"
+      if [[ $filter_newer -gt 0 && $subvol_created -lt $filter_newer ]]; then
+        vlog "${Ifo}${Cya}${subvol}${RCol} is not newer than ${Pur}$filter_newer${RCol}"
+        continue
+      fi
+      if [[ $filter_older -gt 0 && $subvol_created -gt $filter_older ]]; then
+        vlog "${Ifo}${Cya}${subvol}${RCol} is not older than ${Pur}$filter_older${RCol}"
+        continue
+      fi
+    fi
+    echo "$subvol"
+  done
+}
+
+function main() {
+  vlog "${Dbg}main() ${Yel}${*}${RCol}"
+
+  local -i include_snapshots=1
+  local -i include_backups=1
+  local -i include_default=1
+  local -i unique=0
+  local -i diff=0
+
+  local -i OPTIND=0
+  local OPTARG opt
+  while getopts "vhHC:asbN:O:UD" opt "$@"; do
+    case $opt in
+    v)
+      VERBOSE=1
+      ;;
+    h)
+      usage
+      return 0
+      ;;
+    H)
+      usage H
+      return 0
+      ;;
+    C)
+      BTRBK_CONFIG="$OPTARG"
+      CMD_BTRBK+=(--config "$BTRBK_CONFIG")
+      ;;
+    a | b | s)
+      if [[ $include_default -eq 1 ]]; then
+        include_default=0
+        include_snapshots=0
+        include_backups=0
+      fi
+      ;;&
+    a)
+      include_snapshots=1
+      include_backups=1
+      ;;
+    b)
+      include_backups=1
+      ;;
+    s)
+      include_snapshots=1
+      ;;
+    N)
+      filter_newer=$(date --date="$OPTARG" +%s)
+      ;;
+    O)
+      filter_older=$(date --date="$OPTARG" +%s)
+      ;;
+    U)
+      unique=1
+      ;;
+    D)
+      type -P diffuse &> /dev/null || {
+        echo "error: -D: command 'diffuse' not found in PATH" >&2
+        return 1
+      }
+      diff=1
+      ;;
+    \?)
+      return 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  vlog "${Dbg}" \
+    "-v: ${Pur}$VERBOSE${RCol}" \
+    " -C: ${Pur}$BTRBK_CONFIG${RCol}" \
+    " -s: ${Pur}$include_snapshots${RCol}" \
+    " -b: ${Pur}$include_backups${RCol}" \
+    " -N: ${Pur}$filter_newer${RCol}" \
+    " -O: ${Pur}$filter_older${RCol}"
+
+  if [[ $# -lt 1 ]]; then
+    err+=1
+    log "${Err}expected at least 1 positional arguments"
+    return 1
+  fi
+
+  local -a paths=("$@")
+  vlog "${Dbg}paths: ${Cya}${paths[*]}${RCol}"
+
+  local -A subvol_targets=()
+  local -i num_targets=0
+  for p in "${paths[@]}"; do
+    local path ppath subvol_path subvol
+    path="$(realpath -sqm "$p")"
+    ppath="$(dirname "$path")"
+    subvol_path="$(parse_path "$path")" || subvol_path="$(parse_path "$ppath")" || {
+      err+=1
+      log "${Err}unable to determine subvol path for path ${Yel}${path}${RCol}. Skipping..."
+      continue
+    }
+
+    subvol="$(parse_subvol "$subvol_path")" || {
+      err+=1
+      log "${Err}unable to get subvol for ${Yel}${subvol_path}${RCol}. Skipping..."
+      continue
+    }
+
+    local rel
+    rel="$(realpath -sqm --relative-to="$subvol_path" "$path")"
+
+    if [[ $include_snapshots -eq 1 ]]; then
+      local ss
+      for ss in $(parse_subvol_snapshots "$subvol" | filter_subvols); do
+        local ss_rel
+        if ss_rel="$(realpath -sqm "$ss/$rel")" \
+          && [[ -e "$ss_rel" || -L "$ss_rel" ]]; then
+          if [[ -v subvol_targets["$ss"] ]]; then
+            subvol_targets["$ss"]+=":"
+          fi
+          subvol_targets["$ss"]+="$ss_rel"
+          num_targets+=1
+        fi
+      done
+    fi
+    if [[ $include_backups -eq 1 ]]; then
+      local bu
+      for bu in $(parse_subvol_backups "$subvol" | filter_subvols); do
+        local bu_rel
+        if bu_rel="$(realpath -sqm "$bu/$rel")" \
+          && [[ -e "$bu_rel" || -L "$bu_rel" ]]; then
+          if [[ -v subvol_targets["$bu"] ]]; then
+            subvol_targets["$bu"]+=":"
+          fi
+          subvol_targets["$bu"]+="$bu_rel"
+          num_targets+=1
+        fi
+      done
+    fi
+  done
+
+  if [[ ${num_targets} -eq 0 ]]; then
+    log "${Wrn}no occurrences"
+    exit 2
+  fi
+
+  vlog "${Ifo}${Cya}${num_targets}${RCol} occurrences found"
+
+  local -A diff_files=()
+  local -A diff_files_count=()
+  local -A seen=()
+  local target
+  while read -r subvol; do
+    while read -r target; do
+      if [[ $unique -eq 1 && ! -d "$target" ]]; then
+        local base hash
+        base="$(realpath --strip --canonicalize-missing --relative-to="$subvol" "$target")"
+        hash="$(
+          cat <(echo "$base") "$target" \
+            | sha256sum - \
+            | cut -d' ' -f1
+        )"
+
+        if [[ -v "seen['$hash']" ]]; then
+          vlog "${Ifo}skip ${Yel}${target}${RCol} (${Pur}${hash}${RCol})"
+          continue
+        fi
+
+        # shellcheck disable=2034
+        seen["$hash"]="$target"
+
+        if [[ ! -v "diff_files['$base']" ]]; then
+          diff_files["$base"]="$target"
+          diff_files_count["$base"]=1
+        else
+          diff_files["$base"]="$(printf '%s\n' "${diff_files["$base"]:-}" "$target")"
+          diff_files_count["$base"]=$((diff_files_count["$base"] + 1))
+        fi
+      fi
+
+      echo "$target"
+      results+=("$target")
+
+    done <<< "$(sort -g <<< "$(tr ':' '\n' <<< "${subvol_targets["$subvol"]}")")"
+  done <<< "$(sort -g <<< "$(printf '%s\n' "${!subvol_targets[@]}")")"
+
+  if [[ $unique -eq 1 && $diff -eq 1 ]]; then
+    mapfile -t diffuse_args_gen << "EOF"
+      BEGIN {
+        i = 0
+      }
+
+      {
+        if (!i) {
+          r = "-t\n"
+        } else {
+          r = r "\n" p
+          p = "-t\n" $0 "\n"
+        }
+        r = r $0
+        i++
+      }
+
+      END {
+        print r
+      }
+EOF
+    for base in "${!diff_files[@]}"; do
+      local -i c=${diff_files_count["$base"]}
+      [[ $c -gt 1 ]] || continue
+      # shellcheck disable=2046
+      diffuse $(awk "$(printf '%s\n' "${diffuse_args_gen[@]}")" <<< "${diff_files["$base"]}") 2> /dev/null || {
+        echo "error: diffuse failed: did you export DISPLAY / WAYLAND_DISPLAY (use sudo -e)?" >&2
+        return 1
+      }
+    done
+  fi
+}
+
+if [[ -v BASH_SOURCE[0] && "$0" == "${BASH_SOURCE[0]}" ]]; then
+  main "$@"
+fi
