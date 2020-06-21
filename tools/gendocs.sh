@@ -38,21 +38,23 @@ function readme() {
   cat << EOF
 btrfs-extras ![status: experimental](https://img.shields.io/badge/status-experimental-red?style=flat) [![version](https://img.shields.io/github/v/tag/b0o/btrfs-extras?style=flat&color=yellow&label=version&sort=semver)](https://github.com/b0o/btrfs-extras/releases) [![license: gpl-3.0-or-later](https://img.shields.io/github/license/b0o/btrfs-extras?style=flat&color=green)](https://opensource.org/licenses/GPL-3.0)
 ===
+
 EOF
 
+  # TOC
   local prog
-  local -i i=0
   for prog in "${progs[@]}"; do
-    [[ $i -gt 0 ]] && echo -e "\n---"
-    i=$((i + 1))
-    echo ""
-    echo "### $prog"
-    echo '```'
-    "$prog" -H 2>&1
-    echo '```'
+    echo "- [$prog](#$prog)"
   done
 
-  echo ""
+  # Usage
+  for prog in "${progs[@]}"; do
+    echo ""
+    echo "## $prog"
+    echo '```'
+    "$prog" -H  2>&1 | sed -e 's/^\s\+$//'
+    echo '```'
+  done
 }
 
 readme > "$reporoot/README.md"

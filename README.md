@@ -1,7 +1,13 @@
 btrfs-extras ![status: experimental](https://img.shields.io/badge/status-experimental-red?style=flat) [![version](https://img.shields.io/github/v/tag/b0o/btrfs-extras?style=flat&color=yellow&label=version&sort=semver)](https://github.com/b0o/btrfs-extras/releases) [![license: gpl-3.0-or-later](https://img.shields.io/github/license/b0o/btrfs-extras?style=flat&color=green)](https://opensource.org/licenses/GPL-3.0)
 ===
 
-### btrbk-find
+- [btrbk-find](#btrbk-find)
+- [btrbk-purge](#btrbk-purge)
+- [btrbk-gen-conf](#btrbk-gen-conf)
+- [btrfs-subvol-conv](#btrfs-subvol-conv)
+- [btrfs-undelete](#btrfs-undelete)
+
+## btrbk-find
 ```
 Usage: btrbk-find [options] <path> [path ...]
 
@@ -53,12 +59,10 @@ Issues:     https://github.com/b0o/btrfs-extras/issues
 License:    GPL-3.0-or-later
             https://www.gnu.org/licenses/gpl-3.0.txt
 Copyright:  2019-2020 Maddison Hellstrom <github.com/b0o>
-            
+
 ```
 
----
-
-### btrbk-purge
+## btrbk-purge
 ```
 Usage: btrbk-purge [options] <path> [path ...]
 
@@ -122,12 +126,10 @@ Issues:     https://github.com/b0o/btrfs-extras/issues
 License:    GPL-3.0-or-later
             https://www.gnu.org/licenses/gpl-3.0.txt
 Copyright:  2019-2020 Maddison Hellstrom <github.com/b0o>
-            
+
 ```
 
----
-
-### btrbk-gen-conf
+## btrbk-gen-conf
 ```
 Usage: btrbk-gen-conf [options] <conf>
 
@@ -162,12 +164,10 @@ Issues:     https://github.com/b0o/btrfs-extras/issues
 License:    GPL-3.0-or-later
             https://www.gnu.org/licenses/gpl-3.0.txt
 Copyright:  2020 Maddison Hellstrom <github.com/b0o>
-            
+
 ```
 
----
-
-### btrfs-subvol-conv
+## btrfs-subvol-conv
 ```
 Usage: btrfs-subvol-conv [opts] <command> [<args>]
 
@@ -197,12 +197,10 @@ Issues:     https://github.com/b0o/btrfs-extras/issues
 License:    GPL-3.0-or-later
             https://www.gnu.org/licenses/gpl-3.0.txt
 Copyright:  2020 Maddison Hellstrom <github.com/b0o>
-            
+
 ```
 
----
-
-### btrfs-undelete
+## btrfs-undelete
 ```
 Usage: btrfs-undelete [opts] <dev> <file/dir> <dest>
 
@@ -232,4 +230,3 @@ License:    GPL-3.0-or-later
 Copyright:  2020 Maddison Hellstrom <github.com/b0o>
             2013 Jörg Walter <info@syntax-k.de>
 ```
-
