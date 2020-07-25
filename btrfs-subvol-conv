@@ -239,7 +239,7 @@ function dir_to_subvol() {
 
   # if [[ $KEEP -eq 1 ]]; then
   vlog "${Ifo}copy '${Cya}${bak}/*${RCol}' to '${Cya}${dest}${RCol}'"
-  run find "$bak" -maxdepth 1 -mindepth 1 -exec cp -r '{}' "$dest" '\;'
+  run find "$bak" -maxdepth 1 -mindepth 1 -exec cp -va '{}' "$dest" '\;'
   # log "${Wrn}keeping '${Cya}${bak}${RCol}'"
   # else
   #   vlog "${Ifo}move '${Cya}${bak}/*${RCol}' to '${Cya}${dest}${RCol}'"
@@ -315,7 +315,7 @@ function subvol_to_dir() {
 
   # if [[ $KEEP -eq 1 ]]; then
   vlog "${Ifo}copy '${Cya}${bak}/*${RCol}' to '${Cya}${dest}${RCol}'"
-  run find "$bak" -maxdepth 1 -mindepth 1 -exec cp -r '{}' "$dest" '\;'
+  run find "$bak" -maxdepth 1 -mindepth 1 -exec cp -va '{}' "$dest" '\;'
   #   log "${Wrn}keeping '${Cya}${bak}${RCol}'"
   # else
   #   vlog "${Ifo}move '${Cya}${bak}/*${RCol}' to '${Cya}${dest}${RCol}'"
