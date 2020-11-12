@@ -524,20 +524,21 @@ function parse_subvol() {
 
 function parse_path() {
   vlog "${Dbg}parse_path() ${Yel}${*}${RCol}"
-  local path="$*"
-  local res
-  res="$(irun "${CMD_BTRBK[@]}" origin "$path" \| head -1)" || return 2
-  local format tree uuid parent_uuid received_uuid recursion
-  eval "$res"
-  vlog "${Dbg}subvolume at ${Yel}$path${RCol}"
-  vlog "  format              ${Cya}$format             ${RCol}"
-  vlog "  tree                ${Cya}$tree               ${RCol}"
-  vlog "  uuid                ${Cya}$uuid               ${RCol}"
-  vlog "  parent_uuid         ${Cya}$parent_uuid        ${RCol}"
-  vlog "  received_uuid       ${Cya}$received_uuid      ${RCol}"
-  vlog "  recursion           ${Cya}$recursion          ${RCol}"
+  local path n
+  local input="$*"
+  path="$(realpath --canonicalize-existing "$input")"
+  n="$(stat -c "%d" "$path")"
 
-  echo "$tree"
+  until irun "${CMD_BTRFS[@]}" subvolume show "$path" &> /dev/null; do
+    path="$(realpath --canonicalize-existing "$(dirname "$path")")"
+    if [[ $path == "/" || "$(stat -c "%d" "$path")" != "$n" ]]; then
+      vlog "${Ifo}not within a btrfs subvolume: ${Yel}$input${RCol}"
+      return 1
+    fi
+  done
+
+  vlog "${Dbg}subvolume found at ${Yel}$path${RCol}"
+  echo "$path"
 }
 
 function btrbk_get_lockfile() {
