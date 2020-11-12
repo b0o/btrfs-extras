@@ -880,7 +880,7 @@ function main() {
     for i in "${!purge_targets[@]}"; do
       log " - ${Yel}${purge_targets[$i]}${RCol}"
     done
-    confirm_yn "Continue?" 1 || return 2
+    confirm_yn "Continue?" 0 || return 2
   fi
 
   local i=0
