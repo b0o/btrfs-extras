@@ -321,11 +321,11 @@ function parse_path() {
   path="$(realpath --canonicalize-missing "$input")"
 
   until irun "${CMD_BTRFS[@]}" subvolume show "$path" &> /dev/null; do
-    path="$(realpath --canonicalize-missing "$(dirname "$path")")"
     if [[ $path == "/" ]]; then
       vlog "${Ifo}not within a btrfs subvolume: ${Yel}$input${RCol}"
       return 1
     fi
+    path="$(realpath --canonicalize-missing "$(dirname "$path")")"
   done
 
   vlog "${Dbg}subvolume found at ${Yel}$path${RCol}"
